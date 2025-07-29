@@ -13,6 +13,9 @@ langchain-chroma
 PyPDF2
 python-docx
 email-validator
+beautifulsoup4
+pdfminer.six
+pdfplumber
 # Vector database and embeddings
 faiss-cpu
 sentence-transformers
@@ -20,9 +23,14 @@ sentence-transformers
 tiktoken
 numpy
 pandas
+scikit-learn
 # For structured outputs
 pydantic
 # For API endpoints
 fastapi
 uvicorn
 python-multipart
+# For CORS
+python-multipart
+# For logging and utilities
+requests

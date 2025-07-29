@@ -21,7 +21,7 @@ class QueryResponse(BaseModel):
 class IntelligentQuerySystem:
     """Main RAG system for intelligent query processing."""
     
-    def __init__(self, llm_model: str = "llama3.2:3b"):
+    def __init__(self, llm_model: str = "deepseek-r1:latest"):
         self.llm = OllamaLLM(model=llm_model)
         self.document_processor = DocumentProcessor()
         self.vector_store = VectorStore()
@@ -69,12 +69,15 @@ Provide a clear, concise answer based on the document context. If the documents 
     def query(self, user_query: str, top_k: int = 5, threshold: float = 0.3) -> QueryResponse:
         """Process a user query and return structured response."""
         
-        # Perform semantic search
-        relevant_chunks = self.vector_store.semantic_search(
+        # Perform semantic search using the correct method name
+        search_results = self.vector_store.search(
             user_query, 
             k=top_k, 
             threshold=threshold
         )
+        
+        # Extract chunks from search results (search returns tuples of (chunk, score))
+        relevant_chunks = [chunk for chunk, score in search_results]
         
         if not relevant_chunks:
             return QueryResponse(

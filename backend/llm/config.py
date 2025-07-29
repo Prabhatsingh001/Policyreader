@@ -10,9 +10,9 @@ SYSTEM_NAME = "Intelligent Query-Retrieval System"
 VERSION = "1.0.0"
 
 # Document Processing Configuration
-DEFAULT_CHUNK_SIZE = 1000
-DEFAULT_CHUNK_OVERLAP = 200
-SUPPORTED_FORMATS = ['.pdf', '.docx', '.txt', '.eml']
+DEFAULT_CHUNK_SIZE = 1500  # Increased from 1000 for better context
+DEFAULT_CHUNK_OVERLAP = 300  # Increased from 200 for better continuity
+SUPPORTED_FORMATS = ['.pdf', '.docx', '.txt', '.eml', '.html']  # Added .html support
 
 # Vector Store Configuration
 DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
@@ -21,9 +21,9 @@ DEFAULT_SEARCH_THRESHOLD = 0.3
 DEFAULT_TOP_K = 5
 
 # LLM Configuration
-DEFAULT_LLM_MODEL = "llama3.2:3b"
+DEFAULT_LLM_MODEL = "deepseek-r1:latest"
 DEFAULT_TEMPERATURE = 0.1
-DEFAULT_MAX_TOKENS = 2048
+DEFAULT_MAX_TOKENS = 4096  # Increased for larger context handling
 
 # API Configuration
 API_HOST = "0.0.0.0"
