@@ -4,31 +4,31 @@ import { Mail, Linkedin, Github, Users } from 'lucide-react';
 const TeamPage = () => {
   const teamMembers = [
     {
-      name: "Bilal khan",
+      name: "Bilal Khan",
       role: "AI/ML Expert",
       image: "https://placehold.co/128x128/FF5733/FFFFFF?text=BK",
       bio: "Learner under the guidance of abhisheksingh. Passionate about AI and its applications in insurance.",
       linkedin: "#",
       github: "#",
-      email: "#"
+      email: "khanbilal080804@gmail.com"
     },
     {
-      name: "prabhat singh",
+      name: "Prabhat Singh",
       role: "API Developer & Backend Engineer",
       image: "https://placehold.co/128x128/33FF57/FFFFFF?text=PS",
       bio: "learner under the guidance of abhisheksingh. Focused on backend systems and API development.",
-      linkedin: "#",
-      github: "#",
+      linkedin: "https://www.linkedin.com/in/prabhat-singh-736643287",
+      github: "https://github.com/Prabhatsingh001",
       email: "prabhatsingh1112004@gmail.com"
     },
     {
-      name: "Himanshu patel",
+      name: "Himanshu Patel",
       role: "API Developer & Backend Engineer",
       image: "https://placehold.co/128x128/3357FF/FFFFFF?text=HP",
       bio: "learner under the guidance of abhisheksingh. Specializes in backend development and API integration.",
       linkedin: "#",
       github: "#",
-      email: "dhangarsingh007@gmail.com"
+      email: "himanshupatel2125@gmail.com"
     },
     {
       name: "Abhisheksingh",
