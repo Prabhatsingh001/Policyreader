@@ -21,36 +21,36 @@ class QueryResponse(BaseModel):
 class IntelligentQuerySystem:
     """Main RAG system for intelligent query processing."""
     
-    def __init__(self, llm_model: str = "llama3.2:3b"):
+    def __init__(self, llm_model: str = "deepseek-r1:latest"):
         self.llm = OllamaLLM(model=llm_model)
         self.document_processor = DocumentProcessor()
         self.vector_store = VectorStore()
         
         # Define the RAG prompt template
         self.prompt_template = ChatPromptTemplate.from_template("""
-            You are an expert AI assistant specializing in insurance, legal, HR, and compliance domains. 
-            Your task is to answer queries based on the provided document context.
+You are an expert AI assistant specializing in insurance, legal, HR, and compliance domains. 
+Your task is to answer queries based on the provided document context.
 
-            ## Context:
-            The following documents have been retrieved based on the user's query:
-            {documents}
+## Context:
+The following documents have been retrieved based on the user's query:
+{documents}
 
-            ## User Query:
-            {query}
+## User Query:
+{query}
 
-            ## Instructions:
-            1. Analyze the provided documents carefully
-            2. Extract relevant information that directly addresses the query
-            3. If the documents don't contain sufficient information, state this clearly
-            4. Provide specific references to document sections when possible
-            5. Classify the domain (insurance, legal, hr, compliance)
-            6. Explain your reasoning process
+## Instructions:
+1. Analyze the provided documents carefully
+2. Extract relevant information that directly addresses the query
+3. If the documents don't contain sufficient information, state this clearly
+4. Provide specific references to document sections when possible
+5. Classify the domain (insurance, legal, hr, compliance)
+6. Explain your reasoning process
 
 ## Response Format:
 Provide a clear, concise answer based on the document context. If the documents don't contain relevant information, state this clearly.
 
-            ## Response:
-        """)
+## Response:
+""")
         
         self.chain = self.prompt_template | self.llm
     
@@ -69,12 +69,15 @@ Provide a clear, concise answer based on the document context. If the documents 
     def query(self, user_query: str, top_k: int = 5, threshold: float = 0.3) -> QueryResponse:
         """Process a user query and return structured response."""
         
-        # Perform semantic search
-        relevant_chunks = self.vector_store.semantic_search(
+        # Perform semantic search using the correct method name
+        search_results = self.vector_store.search(
             user_query, 
             k=top_k, 
             threshold=threshold
         )
+        
+        # Extract chunks from search results (search returns tuples of (chunk, score))
+        relevant_chunks = [chunk for chunk, score in search_results]
         
         if not relevant_chunks:
             return QueryResponse(
@@ -137,9 +140,10 @@ Provide a clear, concise answer based on the document context. If the documents 
         
         for i, chunk in enumerate(chunks):
             context_part = f"""
-                Document {i+1}: {chunk.source}{'='*50}
-                Content: {chunk.content}
-            """
+Document {i+1}: {chunk.source}
+{'='*50}
+Content: {chunk.content}
+"""
             if chunk.page_number:
                 context_part += f"Page: {chunk.page_number}\n"
             if chunk.section:
