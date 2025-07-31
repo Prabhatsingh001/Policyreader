@@ -1,18 +1,18 @@
-"""
-Configuration settings for the Intelligent Query-Retrieval System.
-"""
-
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # System Configuration
 SYSTEM_NAME = "Intelligent Query-Retrieval System"
 VERSION = "1.0.0"
 
 # Document Processing Configuration
-DEFAULT_CHUNK_SIZE = 1000
-DEFAULT_CHUNK_OVERLAP = 200
-SUPPORTED_FORMATS = ['.pdf', '.docx', '.txt', '.eml']
+DEFAULT_CHUNK_SIZE = 1500  
+DEFAULT_CHUNK_OVERLAP = 300 
+SUPPORTED_FORMATS = ['.pdf', '.docx', '.txt', '.eml', '.html']  
 
 # Vector Store Configuration
 DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
@@ -21,9 +21,11 @@ DEFAULT_SEARCH_THRESHOLD = 0.3
 DEFAULT_TOP_K = 5
 
 # LLM Configuration
-DEFAULT_LLM_MODEL = "llama3.2:3b"
+# Use environment variable for Google API Key
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+DEFAULT_LLM_MODEL = "gemini-2.5-pro" # Or another suitable Google model
 DEFAULT_TEMPERATURE = 0.1
-DEFAULT_MAX_TOKENS = 2048
+DEFAULT_MAX_TOKENS = 4096  # Increased for larger context handling
 
 # API Configuration
 API_HOST = "0.0.0.0"
@@ -115,4 +117,4 @@ TIMEOUT_SECONDS = 30
 # Development Configuration
 DEBUG_MODE = os.getenv("DEBUG", "False").lower() == "true"
 ENABLE_PROFILING = False
-ENABLE_METRICS = True 
+ENABLE_METRICS = True
