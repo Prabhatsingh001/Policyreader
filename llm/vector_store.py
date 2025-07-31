@@ -33,6 +33,7 @@ class VectorStore:
         self.texts = []  # For sparse retrieval
         self.chunk_ids = []  # Parallel to texts
         self.bm25_index = None
+        self.sparse_vectors = None  # Initialize sparse_vectors
         
     def add_documents(self, chunks: List[DocumentChunk], batch_size: int = 100):
         """Add document chunks to the vector store with batching"""
@@ -41,7 +42,7 @@ class VectorStore:
             
         # Initialize FAISS index if not exists
         if self.index is None:
-            self.index = faiss.IndexIDMap2(faiss.IndexFlatIP(self.dimension))
+            self.index = faiss.IndexIDMap(faiss.IndexFlatIP(self.dimension))
         
         # Process in batches
         for i in range(0, len(chunks), batch_size):
@@ -60,7 +61,7 @@ class VectorStore:
             faiss.normalize_L2(embeddings)  # For cosine similarity
             
             # Generate IDs
-            ids = np.array([i for i in range(len(self.chunk_ids), len(self.chunk_ids) + len(batch))])
+            ids = np.array([i for i in range(len(self.chunk_ids), len(self.chunk_ids) + len(batch))], dtype=np.int64)
             
             # Add to index
             self.index.add_with_ids(embeddings, ids)
@@ -107,95 +108,165 @@ class VectorStore:
             threshold: Minimum similarity score
             filter_func: Function to filter chunks (chunk -> bool)
         """
+        logging.info(f"Starting search for query: {query}")
+        logging.info(f"Index exists: {self.index is not None}")
+        logging.info(f"Chunk map size: {len(self.chunk_map) if self.chunk_map else 0}")
+        
         if self.index is None or not self.chunk_map:
+            logging.info("Index or chunk map is empty, returning empty results")
             return []
         
         results = []
         
         # 1. Dense vector search
+        logging.info("Performing dense search")
         dense_results = self._dense_search(query, k * 3, threshold)
+        logging.info(f"Dense search returned {len(dense_results)} results")
         
         # 2. Sparse search (if index exists)
         sparse_results = []
         if self.bm25_index:
+            logging.info("Performing sparse search")
             sparse_results = self._sparse_search(query, self.bm25_k, threshold)
+            logging.info(f"Sparse search returned {len(sparse_results)} results")
+        else:
+            logging.info("No BM25 index found, skipping sparse search")
         
         # 3. Combine results using reciprocal rank fusion
+        logging.info("Combining results")
         all_results = self._combine_results(dense_results, sparse_results, k)
+        logging.info(f"Combined results: {len(all_results)} results")
         
         # 4. Apply filtering and threshold
+        logging.info("Applying filtering and threshold")
         for chunk, score in all_results:
+            logging.info(f"Checking result: {chunk.chunk_id} with score {score}")
             if score < threshold:
+                logging.info(f"Score {score} is below threshold {threshold}, skipping")
                 continue
             if filter_func and not filter_func(chunk):
+                logging.info(f"Filter function rejected chunk {chunk.chunk_id}, skipping")
                 continue
             results.append((chunk, score))
+            logging.info(f"Added result: {chunk.chunk_id} with score {score}")
             if len(results) >= k:
+                logging.info(f"Reached limit of {k} results, stopping")
                 break
         
+        logging.info(f"Search completed, returning {len(results)} results")
         return results
     
     def _dense_search(self, query: str, k: int, threshold: float):
         """Dense vector search using FAISS"""
+        logging.info(f"Encoding query: {query}")
         query_embedding = self.encoder.encode([query], show_progress_bar=False)
         query_embedding = query_embedding.astype('float32')
         faiss.normalize_L2(query_embedding)
         
         # Search FAISS index
+        logging.info(f"Searching FAISS index with k={k}")
+        if self.index is None:
+            logging.warning("FAISS index is None, cannot perform search.")
+            return []
         scores, indices = self.index.search(query_embedding, k)
+        logging.info(f"FAISS search returned {len(scores[0])} scores and {len(indices[0])} indices")
         
         results = []
         for score, idx in zip(scores[0], indices[0]):
             if idx < 0:  # Invalid index
+                logging.info(f"Skipping invalid index: {idx}")
                 continue
+            logging.info(f"Processing result with score: {score}, index: {idx}")
             if score < threshold:
+                logging.info(f"Score {score} is below threshold {threshold}, skipping")
+                continue
+            if idx >= len(self.chunk_ids):
+                logging.info(f"Index {idx} is out of range for chunk_ids (length {len(self.chunk_ids)}), skipping")
                 continue
             chunk_id = self.chunk_ids[idx]
             chunk = self.chunk_map.get(chunk_id)
             if chunk:
+                logging.info(f"Found chunk {chunk_id} with score {score}")
                 results.append((chunk, float(score)))
+            else:
+                logging.info(f"Chunk with ID {chunk_id} not found in chunk_map")
+        logging.info(f"Dense search completed, returning {len(results)} results")
         return results
     
     def _sparse_search(self, query: str, k: int, threshold: float):
         """Sparse search using TF-IDF"""
+        logging.info(f"Performing sparse search for query: {query}")
+        if self.bm25_index is None:
+            logging.warning("BM25 index is None, cannot perform sparse search.")
+            return []
         query_vec = self.bm25_index.transform([query])
+        logging.info(f"Query vector shape: {query_vec.shape}")
         cos_sim = cosine_similarity(query_vec, self.sparse_vectors).flatten()
+        logging.info(f"Cosine similarity shape: {cos_sim.shape}")
         top_indices = np.argsort(cos_sim)[::-1][:k]
+        logging.info(f"Top {k} indices: {top_indices}")
         
         results = []
         for idx in top_indices:
+            if idx >= len(cos_sim):
+                logging.info(f"Index {idx} is out of range for cos_sim (length {len(cos_sim)}), skipping")
+                continue
             score = cos_sim[idx]
+            logging.info(f"Processing sparse result with score: {score}, index: {idx}")
             if score < threshold:
+                logging.info(f"Score {score} is below threshold {threshold}, skipping")
+                continue
+            if idx >= len(self.chunk_ids):
+                logging.info(f"Index {idx} is out of range for chunk_ids (length {len(self.chunk_ids)}), skipping")
                 continue
             chunk_id = self.chunk_ids[idx]
             chunk = self.chunk_map.get(chunk_id)
             if chunk:
+                logging.info(f"Found chunk {chunk_id} with score {score}")
                 results.append((chunk, float(score)))
+            else:
+                logging.info(f"Chunk with ID {chunk_id} not found in chunk_map")
+        logging.info(f"Sparse search completed, returning {len(results)} results")
         return results
     
     def _combine_results(self, dense_results, sparse_results, k: int):
         """Combine results using reciprocal rank fusion (RRF)"""
+        logging.info(f"Combining {len(dense_results)} dense results and {len(sparse_results)} sparse results")
+        
         # Create rank dictionaries
         dense_ranks = {chunk.chunk_id: (1/(rank + 60)) for rank, (chunk, _) in enumerate(dense_results)}
         sparse_ranks = {chunk.chunk_id: (1/(rank + 60)) for rank, (chunk, _) in enumerate(sparse_results)}
         
+        logging.info(f"Dense ranks: {len(dense_ranks)} items")
+        logging.info(f"Sparse ranks: {len(sparse_ranks)} items")
+        
         # Combine scores
         combined_scores = {}
-        for chunk_id in set(list(dense_ranks.keys()) + list(sparse_ranks.keys())):
-            combined_scores[chunk_id] = (
-                dense_ranks.get(chunk_id, 0) * self.hybrid_weight +
-                sparse_ranks.get(chunk_id, 0) * (1 - self.hybrid_weight)
-            )
+        all_chunk_ids = set(list(dense_ranks.keys()) + list(sparse_ranks.keys()))
+        logging.info(f"Total unique chunk IDs: {len(all_chunk_ids)}")
+        
+        for chunk_id in all_chunk_ids:
+            dense_score = dense_ranks.get(chunk_id, 0)
+            sparse_score = sparse_ranks.get(chunk_id, 0)
+            combined_score = dense_score * self.hybrid_weight + sparse_score * (1 - self.hybrid_weight)
+            combined_scores[chunk_id] = combined_score
+            logging.info(f"Chunk {chunk_id}: dense={dense_score:.4f}, sparse={sparse_score:.4f}, combined={combined_score:.4f}")
         
         # Sort by combined score
         sorted_chunk_ids = sorted(combined_scores.keys(), key=lambda x: combined_scores[x], reverse=True)
+        logging.info(f"Sorted chunk IDs: {sorted_chunk_ids[:10]}...")  # Show top 10
         
         # Return top k chunks with scores
         results = []
         for chunk_id in sorted_chunk_ids[:k]:
             chunk = self.chunk_map.get(chunk_id)
             if chunk:
-                results.append((chunk, combined_scores[chunk_id]))
+                score = combined_scores[chunk_id]
+                results.append((chunk, score))
+                logging.info(f"Combined result: {chunk_id} with score {score}")
+            else:
+                logging.info(f"Chunk {chunk_id} not found in chunk_map")
+        logging.info(f"Combine results completed, returning {len(results)} results")
         return results
     
     def save(self, filepath: str):
@@ -264,6 +335,10 @@ class VectorStore:
             self.bm25_index = None
             return False
     
+    
+    
+    
+    
     def get_statistics(self) -> Dict[str, Any]:
         """Get detailed statistics about the vector store"""
         stats = {
@@ -274,7 +349,7 @@ class VectorStore:
             "sparse_index": bool(self.bm25_index)
         }
         
-        if self.index:
+        if self.index is not None:
             stats.update({
                 "index_size": self.index.ntotal,
                 "index_type": str(self.index)

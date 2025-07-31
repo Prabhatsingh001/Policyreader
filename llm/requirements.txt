@@ -30,7 +30,9 @@ pydantic
 fastapi
 uvicorn
 python-multipart
-# For CORS
-python-multipart
 # For logging and utilities
 requests
+pytesseract
+Pillow
+langchain-core
+langchain-google-genai
