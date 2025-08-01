@@ -82,7 +82,7 @@ async def run_submission(
         answers = []
         for question in payload.questions:
             # Use a lower threshold to improve matching
-            result = query_system.query(question, threshold=0.1)
+            result = query_system.query(question, threshold=0.01)
             logging.info(f"Query: {question}")
             logging.info(f"Answer: {result.answer}")
             logging.info(f"Confidence: {result.confidence}")
