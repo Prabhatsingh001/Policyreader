@@ -1,4 +1,5 @@
 import pdfplumber
+from pdfminer.pdfparser import PDFSyntaxError
 import re
 import tiktoken
 import logging
@@ -9,6 +10,8 @@ from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
+import pytesseract
+from PIL import Image
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -30,7 +33,7 @@ class DocumentProcessor:
         chunk_size: int = 1000,
         chunk_overlap: int = 200,
         max_keywords: int = 5,
-        min_section_length: int = 50
+        min_section_length: int = 30  # Reduced for potentially smaller sections
     ):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
@@ -39,13 +42,16 @@ class DocumentProcessor:
         self.tokenizer = tiktoken.get_encoding("cl100k_base")
         
         # Hierarchical section patterns (ordered by priority)
+        # Hierarchical section patterns (ordered by priority)
         self.section_patterns = [
             (r'\n(ARTICLE|SECTION)\s+[IVXLCDM]+[.:]?\s+', 1),  # Roman numerals
             (r'\n\d+\.\d+(\.\d+)?\s+[A-Z]', 2),  # 1.1, 1.1.1
             (r'\n\([a-z]\)\s+', 3),  # (a), (b)
             (r'\n\d+\.\s+[A-Z]', 2),  # 1. Section
             (r'\n[A-Z]\.\s+[A-Z]', 3),  # A. Subsection
-        ]
+            ]
+
+        
 
     def process_directory(self, directory_path: str) -> List[DocumentChunk]:
         """Process all documents in a directory."""
@@ -134,7 +140,7 @@ class DocumentProcessor:
                     else:
                         content_parts.append(f"Row {i}: {', '.join(row)}")
             
-            content = "\n".join(content_parts)
+            content = "".join(content_parts)
             chunks = self._chunk_text(
                 text=content,
                 source=Path(file_path).stem,
@@ -193,8 +199,28 @@ class DocumentProcessor:
                 
                 # Extract text with precise page tracking
                 for page_num, page in enumerate(pdf.pages, 1):
+                    logging.info(f"Processing page {page_num} with pdfplumber")
                     text = page.extract_text(x_tolerance=1, y_tolerance=1) or ""
-                    text += "\n"  # Preserve page separation
+                    
+                    # If no text extracted by pdfplumber, try OCR
+                    if not text.strip():
+                        logging.info(f"No text extracted by pdfplumber from page {page_num}, attempting OCR...")
+                        try:
+                            # Render page as an image
+                            page_image = page.to_image(resolution=300)
+                            img = page_image.original
+                            
+                            # Use pytesseract to extract text from image
+                            text = pytesseract.image_to_string(img) or ""
+                            if text.strip():
+                                logging.info(f"OCR extracted {len(text)} characters from page {page_num}")
+                            else:
+                                logging.warning(f"OCR extracted no text from page {page_num}")
+                        except Exception as ocr_e:
+                            logging.error(f"OCR failed for page {page_num} in {file_path}: {ocr_e}")
+                            text = "" # Ensure text is empty if OCR fails
+
+                    text += ""  # Preserve page separation
                     full_text += text
                     
                     # Map character positions to page numbers
@@ -202,12 +228,34 @@ class DocumentProcessor:
                         char_pos_to_page[current_pos] = page_num
                         current_pos += 1
                 
+                if not full_text.strip():
+                    logging.warning(f"No text extracted from the entire PDF {file_path}")
+                    return []
+                    
                 # Extract sections with hierarchy
                 sections = self._extract_sections(full_text, char_pos_to_page)
                 
+                if not sections:
+                    logging.warning(f"No sections detected in {file_path}, treating as a single document")
+                    # Fallback: Treat the entire text as one section if no sections are found
+                    start_page = char_pos_to_page.get(0, 1)
+                    end_page = char_pos_to_page.get(len(full_text) - 1, start_page)
+                    sections = [{
+                        'id': 0,
+                        'title': 'Document',
+                        'content': full_text,
+                        'level': 0,
+                        'start_page': start_page,
+                        'end_page': end_page
+                    }]
+                
+                logging.info(f"Extracted {len(sections)} sections from {file_path}")
+
                 # Process each section
                 for section in sections:
-                    if len(section['content']) < self.min_section_length:
+                    logging.info(f"Processing section: {section['title']} (Level {section['level']})")
+                    if len(section['content'].strip()) < self.min_section_length:
+                        logging.warning(f"Section '{section['title']}' is too short ({len(section['content'].strip())} chars), skipping.")
                         continue
                         
                     section_chunks = self._chunk_text(
@@ -225,8 +273,9 @@ class DocumentProcessor:
                         }
                     )
                     chunks.extend(section_chunks)
+                    logging.info(f"Generated {len(section_chunks)} chunks for section '{section['title']}'")
                     
-        except pdfplumber.PDFSyntaxError as e:
+        except pdfplumber.utils.exceptions.PdfminerException as e:
             logging.error(f"Malformed PDF structure in {file_path}: {e}")
         except Exception as e:
             logging.exception(f"Critical failure processing {file_path}: {e}")
@@ -272,29 +321,46 @@ class DocumentProcessor:
                 'end_page': end_page
             }]
         
+        # Process text before the first section as an introductory section
+        if matches[0]['start'] > 0:
+             intro_content = text[:matches[0]['start']].strip()
+             if intro_content:
+                start_page = char_pos_to_page.get(0, 1)
+                end_page = char_pos_to_page.get(matches[0]['start'] - 1, start_page)
+                sections.append({
+                    'id': section_id,
+                    'title': 'Introduction',
+                    'content': intro_content,
+                    'level': 0,
+                    'start_page': start_page,
+                    'end_page': end_page
+                })
+                section_id += 1
+                last_end = matches[0]['start']
+        
         # Process each match
         for i, match in enumerate(matches):
+            # Add content between current match and the next match (or end of text)
             section_start = match['end']
             section_end = matches[i+1]['start'] if i+1 < len(matches) else len(text)
             content = text[section_start:section_end].strip()
             
-            if not content:
-                continue
+            # Only create a section if there is content after the header
+            if content:
+                 # Calculate page range
+                start_page = char_pos_to_page.get(match['start'], 1)
+                end_page = char_pos_to_page.get(section_end - 1, start_page)
                 
-            # Calculate page range
-            start_page = char_pos_to_page.get(section_start, 1)
-            end_page = char_pos_to_page.get(section_end - 1, start_page)
-            
-            # Create section
-            sections.append({
-                'id': section_id,
-                'title': match['title'],
-                'content': content,
-                'level': match['level'],
-                'start_page': start_page,
-                'end_page': end_page
-            })
-            section_id += 1
+                # Create section
+                sections.append({
+                    'id': section_id,
+                    'title': match['title'],
+                    'content': content,
+                    'level': match['level'],
+                    'start_page': start_page,
+                    'end_page': end_page
+                })
+                section_id += 1
             last_end = section_end
         
         return sections
@@ -310,11 +376,11 @@ class DocumentProcessor:
     ) -> List[DocumentChunk]:
         """Sentence-aware chunking with token limits"""
         # Split into sentences while preserving delimiters
-        sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|\!)\s+', text)
+        sentences = re.split(r'(?<!w.w.)(?<![A-Z][a-z].)(?<=[.?!])s+', text) # Improved sentence splitting
         chunks = []
         current_chunk = []
         current_token_count = 0
-        chunk_id_base = hashlib.md5(source.encode()).hexdigest()[:8]
+        chunk_id_base = hashlib.md5((source + section).encode()).hexdigest()[:8] # Include section in ID base
         
         for i, sentence in enumerate(sentences):
             # Handle encoding issues
@@ -343,7 +409,7 @@ class DocumentProcessor:
                 ))
                 
                 # Start new chunk with overlap
-                overlap_start = max(0, len(current_chunk) - int(self.chunk_overlap / 10))
+                overlap_start = max(0, len(current_chunk) - int(self.chunk_overlap / 10)) # Approximate sentence overlap
                 current_chunk = current_chunk[overlap_start:]
                 current_token_count = sum(len(self.tokenizer.encode(s)) for s in current_chunk)
             
@@ -381,9 +447,12 @@ class DocumentProcessor:
             )
             X = vectorizer.fit_transform([content])
             feature_array = np.array(vectorizer.get_feature_names_out())
-            tfidf_sorting = np.argsort(X.toarray()).flatten()[::-1]
+            # Convert sparse matrix to dense array and get indices of top features
+            tfidf_sorting = np.argsort(X.toarray().flatten())[::-1]
             
-            return feature_array[tfidf_sorting][:self.max_keywords].tolist()
+            # Get top keywords, but don't exceed the number of available features
+            top_keywords = feature_array[tfidf_sorting][:min(self.max_keywords, len(feature_array))]
+            return top_keywords.tolist()
         except Exception as e:
             logging.warning(f"Keyword extraction failed: {e}")
             # Fallback to static keywords
@@ -410,13 +479,18 @@ class DocumentProcessor:
 # Usage Example
 if __name__ == "__main__":
     processor = DocumentProcessor()
-    chunks = processor.process_pdf("insurance_policy.pdf")
-    
-    print(f"Generated {len(chunks)} chunks")
-    for i, chunk in enumerate(chunks[:3]):
-        print(f"\nChunk {i+1}:")
-        print(f"ID: {chunk.chunk_id}")
-        print(f"Section: {chunk.section} (Level {chunk.section_level})")
-        print(f"Pages: {chunk.metadata['pages']}")
-        print(f"Keywords: {', '.join(chunk.metadata['keywords'])}")
-        print(f"Content: {chunk.content[:200]}...")
+    # Replace with a test PDF file path
+    test_pdf_path = r"D:\Policyreader\llm\sample_docs\ICIHLIP22012V012223.pdf"  # Using raw string for Windows path
+    if Path(test_pdf_path).exists():
+        chunks = processor.process_pdf(test_pdf_path)
+        
+        print(f"Generated {len(chunks)} chunks")
+        for i, chunk in enumerate(chunks[:3]):
+            print(f"Chunk {i+1}:")
+            print(f"ID: {chunk.chunk_id}")
+            print(f"Section: {chunk.section} (Level {chunk.section_level})")
+            print(f"Pages: {chunk.metadata.get('pages', 'N/A') if hasattr(chunk, 'metadata') and chunk.metadata else 'N/A'}")
+            print(f"Keywords: {', '.join(chunk.metadata.get('keywords', [])) if hasattr(chunk, 'metadata') and chunk.metadata else 'N/A'}")
+            print(f"Content: {chunk.content[:200] if hasattr(chunk, 'content') else 'No content'}...")
+    else:
+        print(f"Test PDF file not found at {test_pdf_path}")

@@ -2,11 +2,14 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
-from langchain_ollama import OllamaLLM
+#from langchain_ollama import OllamaLLM # Commented out Ollama import
+from langchain_google_genai import ChatGoogleGenerativeAI # Import Google's LLM
 from document_processor import DocumentProcessor, DocumentChunk
 from vector_store import VectorStore
 import json
 from datetime import datetime
+import os
+from config import GOOGLE_API_KEY, DEFAULT_LLM_MODEL, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS # Import config variables
 
 class QueryResponse(BaseModel):
     """Structured response for query results."""
@@ -21,8 +24,19 @@ class QueryResponse(BaseModel):
 class IntelligentQuerySystem:
     """Main RAG system for intelligent query processing."""
     
-    def __init__(self, llm_model: str = "deepseek-r1:latest"):
-        self.llm = OllamaLLM(model=llm_model)
+    def __init__(self):
+        # Initialize Google's LLM with API Key from environment variable
+        if not GOOGLE_API_KEY:
+            raise ValueError("GOOGLE_API_KEY environment variable not set.")
+            
+        self.llm = ChatGoogleGenerativeAI(
+            model=DEFAULT_LLM_MODEL,
+            temperature=DEFAULT_TEMPERATURE,
+            #max_tokens=DEFAULT_MAX_TOKENS, # max_tokens is not a direct parameter, use max_output_tokens
+            max_output_tokens=DEFAULT_MAX_TOKENS,
+            google_api_key=GOOGLE_API_KEY
+        )
+
         self.document_processor = DocumentProcessor()
         self.vector_store = VectorStore()
         
@@ -50,7 +64,8 @@ The following documents have been retrieved based on the user's query:
 Provide a clear, concise answer based on the document context. If the documents don't contain relevant information, state this clearly.
 
 ## Response:
-""")
+"""
+)
         
         self.chain = self.prompt_template | self.llm
     
@@ -66,12 +81,12 @@ Provide a clear, concise answer based on the document context. If the documents 
         self.vector_store.add_documents(chunks)
         print("Documents added to vector store")
     
-    def query(self, user_query: str, top_k: int = 5, threshold: float = 0.3) -> QueryResponse:
+    def query(self, user_query: str, top_k: int = 5, threshold: float = 0.01) -> QueryResponse:
         """Process a user query and return structured response."""
         
-        # Perform semantic search using the correct method name
+        # Perform semantic search using the correct method name and parameter
         search_results = self.vector_store.search(
-            user_query, 
+            query=user_query, 
             k=top_k, 
             threshold=threshold
         )
@@ -137,24 +152,30 @@ Provide a clear, concise answer based on the document context. If the documents 
     def _prepare_context(self, chunks: List[DocumentChunk]) -> str:
         """Prepare context string from document chunks."""
         context_parts = []
-        
         for i, chunk in enumerate(chunks):
-            context_part = f"""
-Document {i+1}: {chunk.source}
-{'='*50}
-Content: {chunk.content}
-"""
+            # Build the context for each chunk piece by piece for clarity
+            part_lines = []
+            part_lines.append(f"Document {i+1}: {chunk.source}")
+            part_lines.append(f"{'='*50}")
+            part_lines.append(f"Content: {chunk.content}")
+
             if chunk.page_number:
-                context_part += f"Page: {chunk.page_number}\n"
+                part_lines.append(f"Page: {chunk.page_number}")
             if chunk.section:
-                context_part += f"Section: {chunk.section}\n"
+                part_lines.append(f"Section: {chunk.section}")
             if chunk.metadata:
-                context_part += f"Metadata: {json.dumps(chunk.metadata, indent=2)}\n"
-            
-            context_parts.append(context_part)
-        
-        return "\n".join(context_parts)
-    
+                # Safely handle metadata in case it's not JSON serializable
+                try:
+                    metadata_str = json.dumps(chunk.metadata)
+                    part_lines.append(f"Metadata: {metadata_str}")
+                except TypeError:
+                    part_lines.append("Metadata: [Not serializable]")
+
+            context_parts.append("".join(part_lines))
+
+        # Join the parts for different chunks with a clear separator
+        return "---".join(context_parts)
+
     def save_system(self, filepath: str):
         """Save the entire system state."""
         self.vector_store.save(filepath)
@@ -197,4 +218,4 @@ Content: {chunk.content}
         elif any(word in content for word in ["regulation", "compliance", "audit", "safety", "training"]):
             return "compliance"
         else:
-            return "unknown" 
+            return "unknown"
