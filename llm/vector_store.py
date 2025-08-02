@@ -28,6 +28,7 @@ class VectorStore:
         project_id: str = os.getenv("PINECONE_PROJECT_ID"),
         region: str = os.getenv("PINECONE_REGION"),
         namespace: str = os.getenv("PINECONE_NAMESPACE", "default")
+        
     ):
         self.model_name = model_name
         self.dimension = dimension
@@ -49,6 +50,9 @@ class VectorStore:
 
         self.namespace = namespace
 
+        logging.info(f"[Pinecone Init] Using namespace: {self.namespace}")
+
+
     def add_documents(self, chunks: List[DocumentChunk], batch_size: int = 100):
         if not chunks:
             return
@@ -61,11 +65,22 @@ class VectorStore:
             vectors = []
             for j, chunk in enumerate(batch):
                 chunk_id = chunk.chunk_id
-                vectors.append({"id": chunk_id, "values": embeddings[j].tolist(), "metadata": {}})
+                vectors.append({
+                    "id": chunk_id,
+                    "values": embeddings[j].tolist(),
+                    "metadata": {
+                        "text": batch[j].content,
+                        "source": batch[j].source,
+                        "section": batch[j].section or "",
+                        "page_number": batch[j].page_number or -1
+                    }
+                })
+
                 self.chunk_map[chunk_id] = chunk
                 self.texts.append(chunk.content)
                 self.chunk_ids.append(chunk_id)
-            self.index.upsert(vectors=vectors, namespace=self.namespace)
+            resp=self.index.upsert(vectors=vectors, namespace=self.namespace)
+            logging.info(f"[Upsert response] {resp}")
             elapsed_time = time.time() - start_time
             logging.info(f"Added batch {i//batch_size+1}/{(len(chunks)//batch_size)+1} ({len(batch)} chunks, {elapsed_time:.2f}s)")
         self._build_sparse_index()
@@ -80,25 +95,28 @@ class VectorStore:
         logging.info(f"Starting search for query: {query}")
         if not self.chunk_map:
             return []
+        
         results = []
         dense_results = self._dense_search(query, k * 3, threshold)
         sparse_results = self._sparse_search(query, self.bm25_k, threshold) if self.bm25_index else []
+        
+        # The combined results are already sorted by relevance and truncated to k.
         all_results = self._combine_results(dense_results, sparse_results, k)
+        
+        # The threshold has already been applied in dense/sparse search.
+        # Do not filter again on the RRF score.
         for chunk, score in all_results:
-            if score < threshold:
-                continue
             if filter_func and not filter_func(chunk):
                 continue
             results.append((chunk, score))
-            if len(results) >= k:
-                break
+            # The slice [:k] is already handled in _combine_results
+            
         return results
-
     def _dense_search(self, query: str, k: int, threshold: float):
         query_embedding = self.encoder.encode([query], show_progress_bar=False).astype('float32')[0].tolist()
         response = self.index.query(vector=query_embedding, top_k=k, include_metadata=True, namespace=self.namespace)
         results = []
-        for match in response['matches']:
+        for match in response.get('matches',[]):
             chunk_id = match['id']
             score = match['score']
             if score < threshold:
@@ -185,9 +203,14 @@ class VectorStore:
             "sparse_index": bool(self.bm25_index)
         }
         try:
+            logging.info(f"[Pinecone Init] Using namespace: {self.namespace}")
+            stats_raw = self.index.describe_index_stats()
+            logging.info(f"[Full stats dump] {stats_raw}")
+            ns_stats = stats_raw.get("namespaces", {}).get(self.namespace, {})
+            vector_count = ns_stats.get("vector_count", stats_raw.get("total_vector_count", 0))
             stats.update({
                 "index_type": "pinecone",
-                "index_size": self.index.describe_index_stats()['total_vector_count']
+                "index_size": vector_count
             })
         except Exception:
             pass
@@ -219,13 +242,21 @@ class VectorStore:
         return self.search(query, k, filter_func=filter_func)
 
     def clear(self):
-        stats = self.index.describe_index_stats()
-        if self.namespace in stats.get("namespaces", {}):
-            self.index.delete(delete_all=True, namespace=self.namespace)
-            self.chunk_map = {}
-            self.texts = []
-            self.chunk_ids = []
-            self.bm25_index = None
-            logging.info("Vector store cleared")
-        else:
-            logging.warning(f"Namespace '{self.namespace}' does not exist; skipping delete.")
+    # Attempt to delete the remote namespace
+        try:
+            stats = self.index.describe_index_stats()
+            if self.namespace in stats.get("namespaces", {}):
+                self.index.delete(delete_all=True, namespace=self.namespace)
+                logging.info(f"Cleared Pinecone namespace: {self.namespace}")
+            else:
+                logging.warning(f"Namespace '{self.namespace}' does not exist in Pinecone stats; skipping remote delete.")
+        except Exception as e:
+            logging.error(f"Error clearing Pinecone namespace: {e}")
+
+        # Always clear the local state
+        self.chunk_map = {}
+        self.texts = []
+        self.chunk_ids = []
+        self.bm25_index = None
+        self.sparse_vectors = None
+        logging.info("Cleared local vector store state.")
