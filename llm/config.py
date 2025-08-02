@@ -29,7 +29,7 @@ DEFAULT_MAX_TOKENS = 4096  # Increased for larger context handling
 
 # API Configuration
 API_HOST = "0.0.0.0"
-API_PORT = 8000
+API_PORT = os.getenv("PORT" or 8000)
 API_TITLE = "Intelligent Query-Retrieval System API"
 API_DESCRIPTION = "LLM-Powered system for processing documents and answering queries in insurance, legal, HR, and compliance domains"
 
