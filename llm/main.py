@@ -8,6 +8,7 @@ import argparse
 import sys
 from pathlib import Path
 from rag_system import IntelligentQuerySystem
+import os
 
 def main():
     """Main function to run the RAG system."""
@@ -75,11 +76,12 @@ Examples:
         return
     
     # Start API server
-    if args.api:
-        print(f"Starting API server on port {args.port}...")
+    if args.api or os.environ.get("RENDER") or os.environ.get("PORT"):
+        port = int(os.environ.get("PORT", args.port))
+        print(f"Starting API server on port {port}...")
         from api_server import app
         import uvicorn
-        uvicorn.run("api_server:app", host="0.0.0.0", port=args.port, reload=True)
+        uvicorn.run("api_server:app", host="0.0.0.0", port=port)
         return
     
     # Run demo
