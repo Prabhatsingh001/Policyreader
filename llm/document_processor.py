@@ -267,7 +267,7 @@ class DocumentProcessor:
                         metadata={
                             'document_title': Path(file_path).stem,
                             'section_type': self._classify_section(section['title']),
-                            'pages': (section['start_page'], section['end_page']),
+                            'pages': [str(section['start_page']), str(section['end_page'])],
                             'keywords': self._extract_keywords(section['content']),
                             'source_file': file_path
                         }

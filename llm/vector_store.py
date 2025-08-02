@@ -65,20 +65,24 @@ class VectorStore:
             vectors = []
             for j, chunk in enumerate(batch):
                 chunk_id = chunk.chunk_id
+                
+                # CHANGE 1: Create a rich metadata object for Pinecone
+                pinecone_metadata = chunk.metadata.copy() if chunk.metadata else {}
+                pinecone_metadata['text'] = chunk.content
+                pinecone_metadata['source'] = chunk.source
+                pinecone_metadata['section'] = chunk.section or ""
+                pinecone_metadata['page_number'] = chunk.page_number or -1
+
                 vectors.append({
                     "id": chunk_id,
                     "values": embeddings[j].tolist(),
-                    "metadata": {
-                        "text": batch[j].content,
-                        "source": batch[j].source,
-                        "section": batch[j].section or "",
-                        "page_number": batch[j].page_number or -1
-                    }
+                    "metadata": pinecone_metadata # Use the rich metadata object
                 })
 
                 self.chunk_map[chunk_id] = chunk
                 self.texts.append(chunk.content)
                 self.chunk_ids.append(chunk_id)
+
             resp=self.index.upsert(vectors=vectors, namespace=self.namespace)
             logging.info(f"[Upsert response] {resp}")
             elapsed_time = time.time() - start_time
@@ -91,30 +95,38 @@ class VectorStore:
         self.bm25_index = TfidfVectorizer(stop_words='english', ngram_range=(1, 2), max_features=50000)
         self.sparse_vectors = self.bm25_index.fit_transform(self.texts)
 
-    def search(self, query: str, k: int = 5, threshold: float = 0.3, filter_func: Optional[callable] = None) -> List[Tuple[DocumentChunk, float]]:
+    # CHANGE 2: Modify the search method to accept a filter
+    def search(self, query: str, k: int = 5, threshold: float = 0.3, filter_func: Optional[callable] = None, filter: Optional[Dict[str, Any]] = None) -> List[Tuple[DocumentChunk, float]]:
         logging.info(f"Starting search for query: {query}")
         if not self.chunk_map:
             return []
         
         results = []
-        dense_results = self._dense_search(query, k * 3, threshold)
+        # Pass the filter to _dense_search
+        dense_results = self._dense_search(query, k * 3, threshold, filter=filter)
         sparse_results = self._sparse_search(query, self.bm25_k, threshold) if self.bm25_index else []
         
-        # The combined results are already sorted by relevance and truncated to k.
         all_results = self._combine_results(dense_results, sparse_results, k)
         
-        # The threshold has already been applied in dense/sparse search.
-        # Do not filter again on the RRF score.
         for chunk, score in all_results:
             if filter_func and not filter_func(chunk):
                 continue
             results.append((chunk, score))
-            # The slice [:k] is already handled in _combine_results
             
         return results
-    def _dense_search(self, query: str, k: int, threshold: float):
+
+    # CHANGE 3: Update _dense_search to use the filter in the Pinecone query
+    def _dense_search(self, query: str, k: int, threshold: float, filter: Optional[Dict[str, Any]] = None):
         query_embedding = self.encoder.encode([query], show_progress_bar=False).astype('float32')[0].tolist()
-        response = self.index.query(vector=query_embedding, top_k=k, include_metadata=True, namespace=self.namespace)
+        
+        response = self.index.query(
+            vector=query_embedding, 
+            top_k=k, 
+            include_metadata=True, 
+            namespace=self.namespace,
+            filter=filter  # Pass the filter to the Pinecone API
+        )
+        
         results = []
         for match in response.get('matches',[]):
             chunk_id = match['id']
@@ -242,7 +254,6 @@ class VectorStore:
         return self.search(query, k, filter_func=filter_func)
 
     def clear(self):
-    # Attempt to delete the remote namespace
         try:
             stats = self.index.describe_index_stats()
             if self.namespace in stats.get("namespaces", {}):
