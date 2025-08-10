@@ -13,7 +13,6 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 import pytesseract
 from PIL import Image
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 @dataclass
@@ -119,7 +118,6 @@ class DocumentProcessor:
     def process_word_document(self, file_path: str) -> List[DocumentChunk]:
         """Process Word documents (basic implementation)."""
         try:
-            # For now, treat as text file - in production, use python-docx
             logging.warning(f"Word document processing not fully implemented for {file_path}")
             return self.process_text_file(file_path)
         except Exception as e:
@@ -167,7 +165,6 @@ class DocumentProcessor:
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            # Convert JSON to readable text
             content = json.dumps(data, indent=2)
             chunks = self._chunk_text(
                 text=content,
@@ -202,11 +199,9 @@ class DocumentProcessor:
                     logging.info(f"Processing page {page_num} with pdfplumber")
                     text = page.extract_text(x_tolerance=1, y_tolerance=1) or ""
                     
-                    # If no text extracted by pdfplumber, try OCR
                     if not text.strip():
                         logging.info(f"No text extracted by pdfplumber from page {page_num}, attempting OCR...")
                         try:
-                            # Render page as an image
                             page_image = page.to_image(resolution=300)
                             img = page_image.original
                             
@@ -338,20 +333,16 @@ class DocumentProcessor:
                 section_id += 1
                 last_end = matches[0]['start']
         
-        # Process each match
         for i, match in enumerate(matches):
-            # Add content between current match and the next match (or end of text)
             section_start = match['end']
             section_end = matches[i+1]['start'] if i+1 < len(matches) else len(text)
             content = text[section_start:section_end].strip()
             
-            # Only create a section if there is content after the header
+           
             if content:
-                 # Calculate page range
                 start_page = char_pos_to_page.get(match['start'], 1)
                 end_page = char_pos_to_page.get(section_end - 1, start_page)
                 
-                # Create section
                 sections.append({
                     'id': section_id,
                     'title': match['title'],
@@ -375,7 +366,7 @@ class DocumentProcessor:
         metadata: Dict[str, Any]
     ) -> List[DocumentChunk]:
         """Sentence-aware chunking with token limits"""
-        # Split into sentences while preserving delimiters
+        
         sentences = re.split(r'(?<!w.w.)(?<![A-Z][a-z].)(?<=[.?!])s+', text) # Improved sentence splitting
         chunks = []
         current_chunk = []
@@ -392,9 +383,8 @@ class DocumentProcessor:
                 
             token_count = len(sentence_tokens)
             
-            # Check if sentence fits in current chunk
             if current_token_count + token_count > self.chunk_size and current_chunk:
-                # Finalize current chunk
+                
                 chunk_content = " ".join(current_chunk)
                 chunk_id = f"{chunk_id_base}-{len(chunks)}"
                 chunks.append(DocumentChunk(
@@ -408,7 +398,6 @@ class DocumentProcessor:
                     metadata=metadata.copy()
                 ))
                 
-                # Start new chunk with overlap
                 overlap_start = max(0, len(current_chunk) - int(self.chunk_overlap / 10)) # Approximate sentence overlap
                 current_chunk = current_chunk[overlap_start:]
                 current_token_count = sum(len(self.tokenizer.encode(s)) for s in current_chunk)
@@ -416,7 +405,6 @@ class DocumentProcessor:
             current_chunk.append(sentence)
             current_token_count += token_count
         
-        # Add final chunk
         if current_chunk:
             chunk_content = " ".join(current_chunk)
             chunk_id = f"{chunk_id_base}-{len(chunks)}"
@@ -436,7 +424,6 @@ class DocumentProcessor:
     def _extract_keywords(self, content: str) -> List[str]:
         """Dynamic keyword extraction using TF-IDF"""
         try:
-            # Handle small text inputs
             if len(content.split()) < 5:
                 return []
                 
@@ -447,10 +434,9 @@ class DocumentProcessor:
             )
             X = vectorizer.fit_transform([content])
             feature_array = np.array(vectorizer.get_feature_names_out())
-            # Convert sparse matrix to dense array and get indices of top features
+            
             tfidf_sorting = np.argsort(X.toarray().flatten())[::-1]
             
-            # Get top keywords, but don't exceed the number of available features
             top_keywords = feature_array[tfidf_sorting][:min(self.max_keywords, len(feature_array))]
             return top_keywords.tolist()
         except Exception as e:
