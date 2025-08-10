@@ -7,7 +7,7 @@ const TeamPage = () => {
       name: "Bilal Khan",
       role: "AI/ML Expert",
       image: "https://placehold.co/128x128/FF5733/FFFFFF?text=BK",
-      bio: "Learner under the guidance of abhisheksingh. Passionate about AI and its applications in insurance.",
+      bio: "Passionate about AI and its applications in insurance.",
       linkedin: "#",
       github: "#",
       email: "khanbilal080804@gmail.com"
@@ -16,7 +16,7 @@ const TeamPage = () => {
       name: "Prabhat Singh",
       role: "API Developer & Backend Engineer",
       image: "https://placehold.co/128x128/33FF57/FFFFFF?text=PS",
-      bio: "learner under the guidance of abhisheksingh. Focused on backend systems and API development.",
+      bio: "Focused on backend systems and API development.",
       linkedin: "https://www.linkedin.com/in/prabhat-singh-736643287",
       github: "https://github.com/Prabhatsingh001",
       email: "prabhatsingh1112004@gmail.com"
@@ -25,7 +25,7 @@ const TeamPage = () => {
       name: "Himanshu Patel",
       role: "API Developer & Backend Engineer",
       image: "https://placehold.co/128x128/3357FF/FFFFFF?text=HP",
-      bio: "learner under the guidance of abhisheksingh. Specializes in backend development and API integration.",
+      bio: "Specializes in backend development and API integration.",
       linkedin: "#",
       github: "#",
       email: "himanshupatel2125@gmail.com"
@@ -34,7 +34,7 @@ const TeamPage = () => {
       name: "Abhisheksingh",
       role: "Full Stack Technical Lead",
       image: "https://placehold.co/128x128/FF33A1/FFFFFF?text=ASD",
-      bio: "Full Stack Developer and Technical Lead with a passion for AI and insurance technology. Leading the team to build innovative solutions.",
+      bio: "Full Stack Developer with a passion for AI and insurance technology.",
       linkedin: "www.linkedin.com/in/abhisheksingh-dhangar-8b19b6275",
       github: "https://github.com/dhangar007A",
       email: "abhisheksinghdhangar007@gmail.com"
