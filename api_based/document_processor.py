@@ -1,5 +1,6 @@
 import httpx
 import logging
+import os
 from typing import List, Optional
 from pydantic import BaseModel, HttpUrl, RootModel
 from google import genai
@@ -8,12 +9,12 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from io import BytesIO
 import asyncio
-import tempfile
 import json
 from document_processor_2 import process_document_questions
 
 # --- Logging setup ---
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
+
 
 async def detect_file_type(url: str) -> str:
     logging.debug(f"Detecting file type for URL: {url}")
@@ -57,7 +58,7 @@ def text_to_pdf_bytes(text: str) -> bytes:
 
 class ProcessingResult(BaseModel):
     needs_fetching: bool
-    fetch_code: Optional[str] = None
+    links: Optional[List[str]] = None
     answers: Optional[List[str]] = None
 
 
@@ -66,7 +67,7 @@ class AnswerList(RootModel[List[str]]):
 
 
 class DocumentProcessor:
-    def __init__(self, api_key: str,key_list):
+    def __init__(self, api_key: str, key_list):
         self.GEMINI_MODEL = "gemini-2.5-flash"
         self.GEMINI_FILE_LIMIT_MB = 20
         self.client = genai.Client(api_key=api_key)
@@ -86,7 +87,6 @@ class DocumentProcessor:
                 questions_str = "\n".join(f"- {q}" for q in questions)
 
                 if file_size_mb > self.GEMINI_FILE_LIMIT_MB:
-                    content_part = f"Document too large ({file_size_mb:.2f} MB)."
                     return await process_document_questions(str(document_url), questions, self.key_list, self.client)
                 else:
                     file_type = await detect_file_type(str(document_url))
@@ -105,26 +105,17 @@ class DocumentProcessor:
                         pdf_bytes = text_to_pdf_bytes(file_text)
                         content_part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
 
-            # Stage 1
+            # Stage 1 — Ask AI if fetching is needed, and only return links
             logging.info("=== Stage 1: Asking AI if fetching is needed ===")
             stage1_prompt = f"""
 You are processing a document and answering questions.
-If all answers can be obtained directly from the given document, return them in "answers". The answers should be to the point covering all aspects of the question. Or if the document contains a link or multiple links,
-return needs_fetching=True and provide Python code in fetch_code like this for **all links present in the document**
-List every single HTTP/HTTPS link in the document — even if they are conditional or depend on prior results. Do not filter, deduplicate, or decide execution order. Your only job is to output all links exactly as they appear, in the same order as in the document.
+If all answers can be obtained directly from the given document, return them in "answers".
 
-import requests
-url1 = ""
-url2 = ""
-url3 = ""
-response1 = requests.get(url1)
-response2 = requests.get(url2)
-response3 = requests.get(url3)
-print([(url1,response1.json()),(url2,response2.json()),(url3,response3.json())])
+If the document contains one or more HTTP or HTTPS links needed to answer the questions,
+return needs_fetching=true and provide all the links in document in a JSON list called "links".
 
-Don't try to access anything inside the the responses like response.text,etc
+Do not include any code, explanations, or duplicates — just the links in the order they appear.
 
-.
 Questions:
 {questions_str}
 """
@@ -149,44 +140,41 @@ Questions:
                 logging.debug(f"Answers: {stage1_result.answers}")
                 return stage1_result.answers or []
 
-            logging.info("AI says fetching is needed. Extracting fetch_code...")
-            logging.debug(f"Fetch code provided by AI:\n{stage1_result.fetch_code}")
+            # Stage 2 — Fetch links ourselves
+            fetched_data = []
+            if stage1_result.links:
+                logging.info(f"Fetching {len(stage1_result.links)} link(s) from document...")
+                async with httpx.AsyncClient() as client:
+                    for link in stage1_result.links:
+                        try:
+                            resp = await client.get(link, follow_redirects=True, timeout=30)
+                            content_type = resp.headers.get("Content-Type", "")
+                            if "application/json" in content_type:
+                                try:
+                                    data = resp.json()
+                                except Exception:
+                                    data = resp.text
+                            else:
+                                data = resp.text
+                            fetched_data.append((link, data))
+                        except Exception as e:
+                            logging.error(f"Error fetching {link}: {e}")
+                            fetched_data.append((link, f"Error: {e}"))
+            else:
+                logging.warning("AI said fetching is needed but provided no links.")
+                fetched_data = []
 
-            # Stage 2
-            logging.info("=== Stage 2: Running AI-provided fetch code ===")
-            with tempfile.NamedTemporaryFile(mode="w+", suffix=".py", delete=False) as tmpfile:
-                tmpfile.write(stage1_result.fetch_code)
-                tmpfile.flush()
-                try:
-                    process = await asyncio.create_subprocess_exec(
-                        "python", tmpfile.name,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE)
-                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=100)
-                    fetch_output = stdout.decode()
-                    if stderr:
-                        logging.error(f"Error running fetch code: {stderr.decode()}")
-                        return [f"Error executing fetch code: {stderr.decode()}"]
-
-                    logging.debug("=== Fetch code output (to send back to AI) ===")
-                    logging.debug(fetch_output)
-                except asyncio.TimeoutError:
-                    logging.error("Fetch code execution timed out.")
-                    return ["Error: Fetch code execution timed out."]
-                except Exception as e:
-                    logging.error(f"Error running fetch code: {e}")
-                    return [f"Error executing fetch code: {e}"]
-
-            # Stage 3
+            # Stage 3 — Ask AI final answers using document + fetched data
             logging.info("=== Stage 3: Sending fetched data to AI for final answers ===")
             stage2_prompt = f"""
-You are given the fetched data from the document's referenced link and also the document. Check documents content properly then answer.
-Now answer the questions based on this fetched data:
+You are given fetched data from the document's referenced link(s) and also the document.
+Now answer the questions based on both sources.
+
 Questions:
 {questions_str}
 
 Fetched data:
-{fetch_output}
+{json.dumps(fetched_data, ensure_ascii=False, indent=2)}
 """
             response2 = self.client.models.generate_content(
                 model=self.GEMINI_MODEL,

@@ -85,7 +85,7 @@ def text_to_pdf_bytes(text: str) -> bytes:
 async def _call_gemini_with_document(client: genai.Client, pdf_bytes: bytes, questions: List[str]) -> Optional[List[AnswerWithConfidence]]:
     """Calls Gemini with a PDF document and a list of questions."""
     instruction = (
-        "You are an expert insurance policy assistant. Your primary function is to analyze the provided PDF document and answer a list of user questions. "
+        "You are an expert insurance policy assistant. Your primary function is to analyze the provided PDF document and answer a list of user questions under 50 words. "
         "For each question, you must provide a JSON object with three fields: 'answer', 'confidence' (0-100), and 'source_type' ('document_specific', 'general_knowledge', or 'prohibited'). "
         "Use 'document_specific' if the answer is in the PDF, with high confidence. "
         "Use 'general_knowledge' if the question is not in the PDF but can be answered from your knowledge; confidence must be 0. "
@@ -169,24 +169,6 @@ async def process_document_questions(
     gemini_clients: List[genai.Client],
     non_doc_client: genai.Client
 ) -> List[str]:
-    """
-    Processes a list of questions against a document from a URL.
-    
-    This function handles both PDF and non-PDF documents by converting non-PDFs to PDF first.
-    It then splits the PDF, calls Gemini concurrently on the parts, and selects the best
-    answers based on confidence scores and source type. It also runs a fallback non-document
-    call in parallel to handle cases where the document is unreadable or the primary
-    document-based calls fail.
-
-    Args:
-        document_url: The URL of the document to be processed.
-        questions: A list of questions to answer.
-        gemini_clients: A list of Gemini clients to use for concurrent API calls.
-        non_doc_client: A single Gemini client for the non-document fallback call.
-
-    Returns:
-        A list of strings, where each string is the answer to the corresponding question.
-    """
     logging.info(f"🚀 Starting processing for URL: {document_url}")
     
     # Start the non-document call immediately as a fallback
@@ -210,7 +192,7 @@ async def process_document_questions(
     except Exception as e:
         logging.error(f"❌ Failed to download or convert document: {e}")
         
-    # If downloading/conversion failed, wait for the non-document call and return its result.
+    # Early fallback if document can't be downloaded/converted
     if pdf_bytes is None:
         try:
             fallback_answers = await asyncio.wait_for(non_document_answers_task, timeout=5)
@@ -232,21 +214,32 @@ async def process_document_questions(
         split_pdfs = split_pdfs[:num_clients]
         logging.warning(f"⚠️ Truncated PDF splits to match the number of clients ({num_clients}).")
     
-    # Concurrently call Gemini for each split
-    logging.info(f"✨ Making {len(split_pdfs)} concurrent API calls.")
-    tasks = []
-    for i, pdf_part in enumerate(split_pdfs):
-        client = next(client_cycle)
-        tasks.append(_call_gemini_with_document(client, pdf_part, questions))
+    # Prepare document-based tasks
+    tasks = [
+        _call_gemini_with_document(next(client_cycle), pdf_part, questions)
+        for pdf_part in split_pdfs
+    ]
     
-    all_responses = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    # Await the non-document call if it hasn't finished already
-    non_document_answers = await non_document_answers_task
-    
+    # Run document calls with a global timeout
+    try:
+        all_responses = await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True),
+            timeout=TIMEOUT_SECONDS  # Same constant as individual calls
+        )
+    except asyncio.TimeoutError:
+        logging.error("⏳ Global timeout reached for document-based calls.")
+        all_responses = [None] * len(split_pdfs)
+
+    # Await the non-document call (it may already be done)
+    non_document_answers = None
+    try:
+        non_document_answers = await asyncio.wait_for(non_document_answers_task, timeout=1)
+    except asyncio.TimeoutError:
+        logging.warning("Non-document fallback did not finish in time for merging.")
+
     logging.info("✅ All API calls completed (or failed).")
 
-    # Select the best answers
+    # Same answer-selection logic as before
     final_answers = []
     num_questions = len(questions)
     
@@ -286,4 +279,3 @@ async def process_document_questions(
     logging.info("✅ Final answers selected based on confidence scores and source type.")
     
     return final_answers
-
