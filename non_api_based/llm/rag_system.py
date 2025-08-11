@@ -32,7 +32,6 @@ class IntelligentQuerySystem:
         self.llm = ChatGoogleGenerativeAI(
             model=DEFAULT_LLM_MODEL,
             temperature=DEFAULT_TEMPERATURE,
-            #max_tokens=DEFAULT_MAX_TOKENS, # max_tokens is not a direct parameter, use max_output_tokens
             max_output_tokens=DEFAULT_MAX_TOKENS,
             google_api_key=GOOGLE_API_KEY
         )
@@ -40,7 +39,6 @@ class IntelligentQuerySystem:
         self.document_processor = DocumentProcessor()
         self.vector_store = VectorStore()
         
-        # Define the RAG prompt template
         self.prompt_template = ChatPromptTemplate.from_template("""
 You are an expert AI assistant specializing in insurance, legal, HR, and compliance domains. 
 Your task is to answer queries based on the provided document context.
@@ -84,14 +82,12 @@ Provide a clear, concise answer based on the document context. If the documents 
     def query(self, user_query: str, top_k: int = 5, threshold: float = 0.01) -> QueryResponse:
         """Process a user query and return structured response."""
         
-        # Perform semantic search using the correct method name and parameter
         search_results = self.vector_store.search(
             query=user_query, 
             k=top_k, 
             threshold=threshold
         )
         
-        # Extract chunks from search results (search returns tuples of (chunk, score))
         relevant_chunks = [chunk for chunk, score in search_results]
         
         if not relevant_chunks:
@@ -105,26 +101,20 @@ Provide a clear, concise answer based on the document context. If the documents 
                 timestamp=datetime.now().isoformat()
             )
         
-        # Prepare context from retrieved chunks
         context = self._prepare_context(relevant_chunks)
         
-        # Generate response using LLM
         try:
             llm_response = self.chain.invoke({
                 "documents": context,
                 "query": user_query
             })
             
-            # Extract the answer from the LLM response
             answer = llm_response.content if hasattr(llm_response, 'content') else str(llm_response)
             
-            # Determine confidence based on number of relevant chunks
             confidence = min(len(relevant_chunks) / top_k, 1.0)
             
-            # Determine domain based on content analysis
             domain = self._classify_domain(user_query, answer)
             
-            # Extract relevant clauses (first few words of each chunk)
             relevant_clauses = [chunk.content[:100] + "..." for chunk in relevant_chunks[:3]]
             
             return QueryResponse(
@@ -153,7 +143,6 @@ Provide a clear, concise answer based on the document context. If the documents 
         """Prepare context string from document chunks."""
         context_parts = []
         for i, chunk in enumerate(chunks):
-            # Build the context for each chunk piece by piece for clarity
             part_lines = []
             part_lines.append(f"Document {i+1}: {chunk.source}")
             part_lines.append(f"{'='*50}")
@@ -164,7 +153,6 @@ Provide a clear, concise answer based on the document context. If the documents 
             if chunk.section:
                 part_lines.append(f"Section: {chunk.section}")
             if chunk.metadata:
-                # Safely handle metadata in case it's not JSON serializable
                 try:
                     metadata_str = json.dumps(chunk.metadata)
                     part_lines.append(f"Metadata: {metadata_str}")
@@ -173,7 +161,6 @@ Provide a clear, concise answer based on the document context. If the documents 
 
             context_parts.append("".join(part_lines))
 
-        # Join the parts for different chunks with a clear separator
         return "---".join(context_parts)
 
     def save_system(self, filepath: str):
