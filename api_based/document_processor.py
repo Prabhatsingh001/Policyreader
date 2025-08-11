@@ -1,4 +1,4 @@
-import requests
+import httpx
 import logging
 from typing import List, Optional
 from pydantic import BaseModel, HttpUrl, RootModel
@@ -7,19 +7,21 @@ from google.genai import types
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from io import BytesIO
-import subprocess
+import asyncio
 import tempfile
 import json
+from document_processor_2 import process_document_questions
 
 # --- Logging setup ---
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
 
-
-def detect_file_type(url: str) -> str:
+async def detect_file_type(url: str) -> str:
     logging.debug(f"Detecting file type for URL: {url}")
-    resp = requests.get(url, stream=True)
-    resp.raise_for_status()
-    file_start = resp.raw.read(8)
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url, follow_redirects=True)
+        resp.raise_for_status()
+        file_start = await resp.aread()
+        file_start = file_start[:8]
 
     if file_start.startswith(b"%PDF-"):
         return "pdf"
@@ -64,46 +66,50 @@ class AnswerList(RootModel[List[str]]):
 
 
 class DocumentProcessor:
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str,key_list):
         self.GEMINI_MODEL = "gemini-2.5-flash"
         self.GEMINI_FILE_LIMIT_MB = 20
         self.client = genai.Client(api_key=api_key)
+        self.key_list = [genai.Client(api_key=i) for i in key_list]
 
-    def process_answers(self, document_url: HttpUrl, questions: List[str]) -> List[str]:
+    async def process_answers(self, document_url: HttpUrl, questions: List[str]) -> List[str]:
         try:
             logging.info(f"=== Starting processing for document: {document_url} ===")
+            async with httpx.AsyncClient() as client:
+                # Step 0: File size
+                head_resp = await client.head(str(document_url), follow_redirects=True)
+                head_resp.raise_for_status()
+                file_size_bytes = int(head_resp.headers.get("Content-Length", 0))
+                file_size_mb = file_size_bytes / (1024 * 1024)
+                logging.info(f"File size: {file_size_mb:.2f} MB")
 
-            # Step 0: File size
-            head_resp = requests.head(document_url, allow_redirects=True)
-            head_resp.raise_for_status()
-            file_size_bytes = int(head_resp.headers.get("Content-Length", 0))
-            file_size_mb = file_size_bytes / (1024 * 1024)
-            logging.info(f"File size: {file_size_mb:.2f} MB")
+                questions_str = "\n".join(f"- {q}" for q in questions)
 
-            questions_str = "\n".join(f"- {q}" for q in questions)
-
-            if file_size_mb > self.GEMINI_FILE_LIMIT_MB:
-                logging.warning(f"File too large, skipping document parsing.")
-                content_part = f"Document too large ({file_size_mb:.2f} MB). Using general knowledge."
-            else:
-                file_type = detect_file_type(document_url)
-                logging.info(f"File type detected: {file_type}")
-                if file_type in ["jpeg", "png", "gif"]:
-                    file_bytes = requests.get(document_url).content
-                    content_part = types.Part.from_bytes(data=file_bytes, mime_type=f"image/{file_type}")
-                elif file_type == "pdf":
-                    file_bytes = requests.get(document_url).content
-                    content_part = types.Part.from_bytes(data=file_bytes, mime_type="application/pdf")
+                if file_size_mb > self.GEMINI_FILE_LIMIT_MB:
+                    content_part = f"Document too large ({file_size_mb:.2f} MB)."
+                    return await process_document_questions(str(document_url), questions, self.key_list, self.client)
                 else:
-                    file_text = requests.get(document_url).text
-                    pdf_bytes = text_to_pdf_bytes(file_text)
-                    content_part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
+                    file_type = await detect_file_type(str(document_url))
+                    logging.info(f"File type detected: {file_type}")
+                    if file_type in ["jpeg", "png", "gif"]:
+                        resp = await client.get(str(document_url), follow_redirects=True)
+                        file_bytes = await resp.aread()
+                        content_part = types.Part.from_bytes(data=file_bytes, mime_type=f"image/{file_type}")
+                    elif file_type == "pdf":
+                        resp = await client.get(str(document_url), follow_redirects=True)
+                        file_bytes = await resp.aread()
+                        content_part = types.Part.from_bytes(data=file_bytes, mime_type="application/pdf")
+                    else:
+                        resp = await client.get(str(document_url), follow_redirects=True)
+                        file_text = resp.text
+                        pdf_bytes = text_to_pdf_bytes(file_text)
+                        content_part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
 
             # Stage 1
             logging.info("=== Stage 1: Asking AI if fetching is needed ===")
             stage1_prompt = f"""
-You are processing a document and answering questions. 
-If all answers can be obtained directly from the given document, return them in "answers". The answers should be to the point covering all aspects of the question. Or if the document contains a link or multiple links, 
+You are processing a document and answering questions.
+If all answers can be obtained directly from the given document, return them in "answers". The answers should be to the point covering all aspects of the question. Or if the document contains a link or multiple links,
 return needs_fetching=True and provide Python code in fetch_code like this for **all links present in the document**
 List every single HTTP/HTTPS link in the document — even if they are conditional or depend on prior results. Do not filter, deduplicate, or decide execution order. Your only job is to output all links exactly as they appear, in the same order as in the document.
 
@@ -118,7 +124,7 @@ print([(url1,response1.json()),(url2,response2.json()),(url3,response3.json())])
 
 Don't try to access anything inside the the responses like response.text,etc
 
- .
+.
 Questions:
 {questions_str}
 """
@@ -152,10 +158,22 @@ Questions:
                 tmpfile.write(stage1_result.fetch_code)
                 tmpfile.flush()
                 try:
-                    fetch_output = subprocess.check_output(["python", tmpfile.name], text=True, timeout=100)
+                    process = await asyncio.create_subprocess_exec(
+                        "python", tmpfile.name,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE)
+                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=100)
+                    fetch_output = stdout.decode()
+                    if stderr:
+                        logging.error(f"Error running fetch code: {stderr.decode()}")
+                        return [f"Error executing fetch code: {stderr.decode()}"]
+
                     logging.debug("=== Fetch code output (to send back to AI) ===")
                     logging.debug(fetch_output)
-                except subprocess.CalledProcessError as e:
+                except asyncio.TimeoutError:
+                    logging.error("Fetch code execution timed out.")
+                    return ["Error: Fetch code execution timed out."]
+                except Exception as e:
                     logging.error(f"Error running fetch code: {e}")
                     return [f"Error executing fetch code: {e}"]
 
@@ -189,7 +207,7 @@ Fetched data:
 
             return final_answers
 
-        except requests.exceptions.RequestException as e:
+        except httpx.RequestError as e:
             logging.error(f"Request error: {e}")
             return [f"Error: Unable to access document. Details: {e}"]
         except Exception as e:
