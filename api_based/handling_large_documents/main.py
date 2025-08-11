@@ -25,7 +25,7 @@ FALLBACK_ANSWER = "I'm sorry, I can't answer that question."
 MAX_SPLIT_SIZE_MB = 5 # This applies to PDF splitting. For text/images, we send the whole extracted content.
 
 # A separate API key for the non-document call
-NON_DOCUMENT_API_KEY = "AIzaSyDpC9BVMeRxtLlqrlGoM_Sps1n98ggU9yM"
+NON_DOCUMENT_API_KEY = ""
 NON_DOCUMENT_CLIENT = genai.Client(api_key=NON_DOCUMENT_API_KEY)
 
 # HTTP client singleton
